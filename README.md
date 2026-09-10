@@ -167,7 +167,11 @@ mssql_exporter/
 ├── docker-compose.yml           本地 build + 一個 SQL Server 2017 容器，設定全走環境變數
 ├── docker-compose-pull.yml      同上但改拉 danieloliver/mssql_exporter:latest
 ├── .env                         docker-compose 用的變數檔（見已知限制：實際上沒被用到）
+├── deploy/
+│   ├── mssql_exporter/run-mssql_exporter.cmd   Release zip 內的啟動腳本，首次啟動複製 example 設定檔
+│   └── sql_exporter/            搭配用的 sql_exporter 設定、啟動與建置腳本（見下方章節）
 ├── .github/workflows/
+│   ├── release.yaml             推 v* tag → windows runner 建置 portable 包 → 建立 Release；dispatch 只出 artifact
 │   ├── dotnetbuild.yaml         ubuntu + windows 各 publish 一份 self-contained，上傳 artifact
 │   ├── dockerimage.yaml         每次 push 都 docker build 一次當檢查
 │   └── dockerhub.yaml           develop / v* tag / release 時推 Docker Hub（需要 secrets）
@@ -210,15 +214,34 @@ mssql_exporter/
 | Serilog + AspNetCore + Settings.Configuration + Sinks.Console/File + Enrichers.Environment | 日誌；`Sinks.File` 與 `Enrichers.Environment` 有裝但 `config.json` 沒啟用 |
 | Microsoft.Extensions.Hosting.WindowsServices 6.0.0 | `IsWindowsService()` 判斷與 `UseWindowsService()` |
 
-## Windows 服務
+## 從 GitHub Release 佈署（Windows）
+
+推 `v*` tag 會由 `.github/workflows/release.yaml` 在 windows runner 建置並建立 Release，
+附件是 `mssql_exporter-<版本>-portable-win-x64.zip`。這是 **framework-dependent** 包，
+伺服器要先裝 **ASP.NET Core 6.0 Runtime**（不是只有 .NET Runtime）。
+
+zip 內容：
+
+| 項目 | 說明 |
+|---|---|
+| `mssql_exporter.exe` 與 dll | 版本號從 tag 注入，`(Get-Item mssql_exporter.dll).VersionInfo.ProductVersion` 可查 |
+| `config.json.example`、`metrics.json.example` | **真檔不在 zip 裡**。升級時直接解壓覆蓋，現場改過的 `metrics.json` 不會被重設 |
+| `run-mssql_exporter.cmd` | 首次啟動時把兩個 example 複製成真檔，然後 `serve`。掛服務用 nssm 指到這個 cmd |
+| `sql_exporter/` | 搭配用的 sql_exporter 設定與建置腳本，見上一節；exe 要另外建 |
+
+連線字串用**系統環境變數** `PROMETHEUS_MSSQL_DataSource` 給，或在 exe 旁放
+`appsettings.json` 寫 `{"DataSource": "..."}`（服務沒有命令列參數可用）。
+日誌預設只有 Console sink，掛成服務後看不到；要改 `config.json` 啟用 `Serilog.Sinks.File`。
+
+不用 nssm 的話也可以直接：
 
 ```cmd
 sc create mssql_exporter binPath= "C:\path\to\mssql_exporter.exe"
 ```
 
-服務模式下程式自動走 `serve`。連線字串與其他設定要用**系統環境變數**或執行檔旁的
-`config.json` / `appsettings.json` 給（服務沒有命令列參數可用）。日誌預設只有 Console sink，
-掛成服務後看不到；要改 `config.json` 啟用 `Serilog.Sinks.File`。
+服務模式下程式自動走 `serve`，但這樣首次啟動不會自動產生 `metrics.json`，要先手動從 example 複製。
+
+手動觸發（Actions 頁面的 Run workflow）只會產出 workflow artifact，不建 Release，適合改過 workflow 後先試跑。
 
 ## 搭配 sql_exporter 跑重查詢
 

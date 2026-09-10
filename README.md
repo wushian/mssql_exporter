@@ -16,7 +16,7 @@ gauge / counter（可帶 label）後回傳。沒有背景排程、沒有快取�
 | 建置 SDK | 專案 TFM 是 `net8.0`，`global.json` 設 8.0.100 起 `rollForward: latestMajor`，實測 .NET 9.0.309 SDK 可建置，0 警告 |
 | 執行 Runtime | ASP.NET Core 8.0 Runtime（或用 `--self-contained` 發佈就不需要） |
 | 資料庫 | SQL Server，連線帳號要能讀 `sys.sysprocesses`、`sys.dm_os_performance_counters`（預設查詢用到） |
-| 網路 | 預設聽 `http://*:80`，Windows 上非管理員通常綁不到 80，改 `-ServerPort` |
+| 網路 | 預設聽 `http://*:9399`，所有介面；改 `-ServerPort` 或環境變數 |
 
 > 資料庫驅動是 `Microsoft.Data.SqlClient`，和舊版 `System.Data.SqlClient` 有兩個行為差異，
 > 換版時連線字串要檢查，見「已知限制」的前兩條。
@@ -87,7 +87,7 @@ repo 內的 `src/server/config.json` 只放 Serilog 設定。
 | ConfigFile | `-ConfigFile` | `PROMETHEUS_MSSQL_ConfigFile` | `metrics.json` | 相對路徑會接在執行檔目錄後面 |
 | ConfigText | `-ConfigText` | `PROMETHEUS_MSSQL_ConfigText` | （空） | 直接給 metrics JSON 內容；有值時**完全不讀** ConfigFile |
 | ServerPath | `-ServerPath` | `PROMETHEUS_MSSQL_ServerPath` | `metrics` | 程式會把所有 `/` 拿掉再前綴一個 `/`，所以 `a/b` 會變成 `/ab` |
-| ServerPort | `-ServerPort` | `PROMETHEUS_MSSQL_ServerPort` | `80` | 綁在所有介面 `http://*:port` |
+| ServerPort | `-ServerPort` | `PROMETHEUS_MSSQL_ServerPort` | `9399` | 綁在所有介面 `http://*:port` |
 | AddExporterMetrics | `-AddExporterMetrics` | `PROMETHEUS_MSSQL_AddExporterMetrics` | `false` | `true` 時改用 prometheus-net 預設 registry，會多出 .NET runtime 的 `dotnet_*`/`process_*` metrics |
 | 日誌等級 | — | `PROMETHEUS_MSSQL_Serilog__MinimumLevel` | `config.json` 裡的 `Information` | 這是 Serilog 設定的 key，實測設 `Warning` 後啟動與 scrape 的 INF 行全部消失 |
 
@@ -334,5 +334,5 @@ Serilog.Settings.Configuration 靠反射載入的型別剪掉。本次只在 Win
   `.env` 只會影響 compose 自己的變數展開，不會進容器。
 - **Information 等級會把整份 metrics.json 和每個失敗查詢的完整 stack trace 印進日誌**，
   每次 scrape 都印。正式環境請設 `Warning`。
-- **預設連 port 80**，且 `UseUrls` 綁 `*`，沒有任何驗證，任何能連到這台機器的人都能觸發一輪 DB 查詢。
+- **預設聽 9399**，且 `UseUrls` 綁 `*`，沒有任何驗證，任何能連到這台機器的人都能觸發一輪 DB 查詢。
 - 沒有任何自動化測試。

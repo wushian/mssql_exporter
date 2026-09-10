@@ -20,7 +20,7 @@ RUN dotnet publish -c Release -r linux-x64 --no-restore -o out -p:PublishSingleF
 
 # Self-contained output only needs the native prerequisites, not the ASP.NET Core runtime image.
 FROM mcr.microsoft.com/dotnet/runtime-deps:8.0 AS runtime
-EXPOSE 80
+EXPOSE 9399
 WORKDIR /app
 COPY --from=build /app/server/out ./
 ENTRYPOINT ["./mssql_exporter", "serve"]

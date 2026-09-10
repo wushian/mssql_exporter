@@ -50,6 +50,441 @@
           "DefaultValue": 0
         }
       ]
+    },
+    {
+      "Name": "mssql_blocking",
+      "Query": ";WITH b AS ( SELECT r.session_id, r.blocking_session_id, r.wait_time, r.wait_type, r.database_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE r.blocking_session_id <> 0 AND s.is_user_process = 1), heads AS (SELECT DISTINCT blocking_session_id AS spid FROM b WHERE blocking_session_id NOT IN (SELECT session_id FROM b)), chain AS (SELECT session_id, blocking_session_id, 1 AS depth FROM b WHERE blocking_session_id IN (SELECT spid FROM heads) UNION ALL SELECT b.session_id, b.blocking_session_id, c.depth + 1 FROM b JOIN chain c ON b.blocking_session_id = c.session_id WHERE c.depth < 32) SELECT ISNULL(MAX(b.wait_time) / 1000.0, 0) AS max_wait_seconds, COUNT(*) AS blocked_sessions, COUNT(DISTINCT b.blocking_session_id) AS blockers, (SELECT COUNT(*) FROM heads) AS head_blockers, ISNULL(SUM(b.wait_time) / 1000.0, 0) AS total_wait_seconds, ISNULL((SELECT MAX(depth) FROM chain), 0) AS chain_depth_max, (SELECT COUNT(*) FROM heads h JOIN sys.dm_exec_sessions hs ON hs.session_id = h.spid   WHERE hs.status = 'sleeping' AND hs.open_transaction_count > 0) AS idle_tran_head_blockers, ISNULL((SELECT MAX(DATEDIFF(SECOND, hs.last_request_end_time, GETDATE())) FROM heads h JOIN sys.dm_exec_sessions hs ON hs.session_id = h.spid   WHERE hs.status = 'sleeping' AND hs.open_transaction_count > 0), 0) AS idle_tran_head_blocker_max_idle_seconds FROM b",
+      "Description": "Current blocking chain snapshot from sys.dm_exec_requests (user requests only)",
+      "Columns": [
+        {
+          "Name": "max_wait_seconds",
+          "Label": "mssql_blocking_max_wait_seconds",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "blocked_sessions",
+          "Label": "mssql_blocking_blocked_sessions",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "blockers",
+          "Label": "mssql_blocking_blockers",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "head_blockers",
+          "Label": "mssql_blocking_head_blockers",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "total_wait_seconds",
+          "Label": "mssql_blocking_total_wait_seconds",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "chain_depth_max",
+          "Label": "mssql_blocking_chain_depth_max",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "idle_tran_head_blockers",
+          "Label": "mssql_blocking_idle_tran_head_blockers",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "idle_tran_head_blocker_max_idle_seconds",
+          "Label": "mssql_blocking_idle_tran_head_blocker_max_idle_seconds",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        }
+      ]
+    },
+    {
+      "Name": "mssql_blocking_by_wait_type",
+      "Query": ";WITH b AS ( SELECT r.session_id, r.blocking_session_id, r.wait_time, r.wait_type, r.database_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE r.blocking_session_id <> 0 AND s.is_user_process = 1), heads AS (SELECT DISTINCT blocking_session_id AS spid FROM b WHERE blocking_session_id NOT IN (SELECT session_id FROM b)) SELECT ISNULL(wait_type, '') AS wait_type, COUNT(*) AS blocked FROM b GROUP BY wait_type",
+      "Description": "Blocked user requests per wait type (LCK_M_U, LCK_M_X, LCK_M_S ...)",
+      "Usage": "GaugesWithLabels",
+      "Columns": [
+        {
+          "Name": "wait_type",
+          "Label": "wait_type",
+          "Usage": "GaugeLabel",
+          "Order": 0
+        },
+        {
+          "Name": "blocked",
+          "Label": "blocked",
+          "Usage": "Gauge"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_blocking_by_database",
+      "Query": ";WITH b AS ( SELECT r.session_id, r.blocking_session_id, r.wait_time, r.wait_type, r.database_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE r.blocking_session_id <> 0 AND s.is_user_process = 1), heads AS (SELECT DISTINCT blocking_session_id AS spid FROM b WHERE blocking_session_id NOT IN (SELECT session_id FROM b)) SELECT ISNULL(DB_NAME(database_id), '') AS dbname, COUNT(*) AS blocked FROM b GROUP BY database_id",
+      "Description": "Blocked user requests per database",
+      "Usage": "GaugesWithLabels",
+      "Columns": [
+        {
+          "Name": "dbname",
+          "Label": "dbname",
+          "Usage": "GaugeLabel",
+          "Order": 0
+        },
+        {
+          "Name": "blocked",
+          "Label": "blocked",
+          "Usage": "Gauge"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_blocking_wait_by_object",
+      "Query": "SELECT dbname, resource_type, object_name, COUNT(*) AS waiting FROM ( SELECT ISNULL(DB_NAME(l.resource_database_id), '') AS dbname, l.resource_type,  CASE l.resource_type WHEN 'OBJECT' THEN ISNULL(OBJECT_NAME(l.resource_associated_entity_id, l.resource_database_id), '')   ELSE ISNULL(OBJECT_NAME(p.object_id, l.resource_database_id), '') END AS object_name FROM sys.dm_tran_locks l LEFT JOIN sys.partitions p ON p.hobt_id = l.resource_associated_entity_id  AND l.resource_type IN ('KEY', 'PAGE', 'RID') AND l.resource_database_id = DB_ID() WHERE l.request_status = 'WAIT' AND l.resource_type IN ('OBJECT', 'KEY', 'PAGE', 'RID')) x GROUP BY dbname, resource_type, object_name",
+      "Description": "Lock waits per contended object (table name resolvable only for the connection's Initial Catalog; other DBs show empty object)",
+      "Usage": "GaugesWithLabels",
+      "Columns": [
+        {
+          "Name": "dbname",
+          "Label": "dbname",
+          "Usage": "GaugeLabel",
+          "Order": 0
+        },
+        {
+          "Name": "resource_type",
+          "Label": "resource_type",
+          "Usage": "GaugeLabel",
+          "Order": 1
+        },
+        {
+          "Name": "object_name",
+          "Label": "object",
+          "Usage": "GaugeLabel",
+          "Order": 2
+        },
+        {
+          "Name": "waiting",
+          "Label": "waiting",
+          "Usage": "Gauge"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_blocking_head_blocker_victims",
+      "Query": ";WITH b AS ( SELECT r.session_id, r.blocking_session_id, r.wait_time, r.wait_type, r.database_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE r.blocking_session_id <> 0 AND s.is_user_process = 1), heads AS (SELECT DISTINCT blocking_session_id AS spid FROM b WHERE blocking_session_id NOT IN (SELECT session_id FROM b)) SELECT TOP (10) h.spid, RTRIM(ISNULL(hs.host_name, '')) AS host, ISNULL(hs.login_name, '') AS login, ISNULL(hs.program_name, '') AS program, ISNULL(hs.status, '') AS status, ISNULL(DB_NAME(hs.database_id), '') AS dbname, (SELECT COUNT(*) FROM b WHERE b.blocking_session_id = h.spid) AS victims FROM heads h JOIN sys.dm_exec_sessions hs ON hs.session_id = h.spid LEFT JOIN sys.dm_tran_session_transactions st ON st.session_id = h.spid AND st.is_user_transaction = 1 LEFT JOIN sys.dm_tran_active_transactions at ON at.transaction_id = st.transaction_id ORDER BY victims DESC",
+      "Description": "Per head blocker (blocks others, not blocked itself): number of directly blocked sessions. Labels churn with spid; series live only while the blocker exists.",
+      "Usage": "GaugesWithLabels",
+      "Columns": [
+        {
+          "Name": "spid",
+          "Label": "spid",
+          "Usage": "GaugeLabel",
+          "Order": 0
+        },
+        {
+          "Name": "host",
+          "Label": "host",
+          "Usage": "GaugeLabel",
+          "Order": 1
+        },
+        {
+          "Name": "login",
+          "Label": "login",
+          "Usage": "GaugeLabel",
+          "Order": 2
+        },
+        {
+          "Name": "program",
+          "Label": "program",
+          "Usage": "GaugeLabel",
+          "Order": 3
+        },
+        {
+          "Name": "status",
+          "Label": "status",
+          "Usage": "GaugeLabel",
+          "Order": 4
+        },
+        {
+          "Name": "dbname",
+          "Label": "dbname",
+          "Usage": "GaugeLabel",
+          "Order": 5
+        },
+        {
+          "Name": "victims",
+          "Label": "victims",
+          "Usage": "Gauge"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_blocking_head_blocker_max_wait_seconds",
+      "Query": ";WITH b AS ( SELECT r.session_id, r.blocking_session_id, r.wait_time, r.wait_type, r.database_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE r.blocking_session_id <> 0 AND s.is_user_process = 1), heads AS (SELECT DISTINCT blocking_session_id AS spid FROM b WHERE blocking_session_id NOT IN (SELECT session_id FROM b)) SELECT TOP (10) h.spid, RTRIM(ISNULL(hs.host_name, '')) AS host, ISNULL(hs.login_name, '') AS login, ISNULL(hs.program_name, '') AS program, ISNULL(hs.status, '') AS status, ISNULL(DB_NAME(hs.database_id), '') AS dbname, ISNULL((SELECT MAX(b.wait_time) / 1000.0 FROM b WHERE b.blocking_session_id = h.spid), 0) AS max_wait_seconds FROM heads h JOIN sys.dm_exec_sessions hs ON hs.session_id = h.spid LEFT JOIN sys.dm_tran_session_transactions st ON st.session_id = h.spid AND st.is_user_transaction = 1 LEFT JOIN sys.dm_tran_active_transactions at ON at.transaction_id = st.transaction_id ORDER BY max_wait_seconds DESC",
+      "Description": "Per head blocker: longest wait among the sessions it blocks directly",
+      "Usage": "GaugesWithLabels",
+      "Columns": [
+        {
+          "Name": "spid",
+          "Label": "spid",
+          "Usage": "GaugeLabel",
+          "Order": 0
+        },
+        {
+          "Name": "host",
+          "Label": "host",
+          "Usage": "GaugeLabel",
+          "Order": 1
+        },
+        {
+          "Name": "login",
+          "Label": "login",
+          "Usage": "GaugeLabel",
+          "Order": 2
+        },
+        {
+          "Name": "program",
+          "Label": "program",
+          "Usage": "GaugeLabel",
+          "Order": 3
+        },
+        {
+          "Name": "status",
+          "Label": "status",
+          "Usage": "GaugeLabel",
+          "Order": 4
+        },
+        {
+          "Name": "dbname",
+          "Label": "dbname",
+          "Usage": "GaugeLabel",
+          "Order": 5
+        },
+        {
+          "Name": "max_wait_seconds",
+          "Label": "max_wait_seconds",
+          "Usage": "Gauge"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_blocking_head_blocker_tran_age_seconds",
+      "Query": ";WITH b AS ( SELECT r.session_id, r.blocking_session_id, r.wait_time, r.wait_type, r.database_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE r.blocking_session_id <> 0 AND s.is_user_process = 1), heads AS (SELECT DISTINCT blocking_session_id AS spid FROM b WHERE blocking_session_id NOT IN (SELECT session_id FROM b)) SELECT TOP (10) h.spid, RTRIM(ISNULL(hs.host_name, '')) AS host, ISNULL(hs.login_name, '') AS login, ISNULL(hs.program_name, '') AS program, ISNULL(hs.status, '') AS status, ISNULL(DB_NAME(hs.database_id), '') AS dbname, ISNULL(DATEDIFF(SECOND, at.transaction_begin_time, GETDATE()), 0) AS tran_age_seconds FROM heads h JOIN sys.dm_exec_sessions hs ON hs.session_id = h.spid LEFT JOIN sys.dm_tran_session_transactions st ON st.session_id = h.spid AND st.is_user_transaction = 1 LEFT JOIN sys.dm_tran_active_transactions at ON at.transaction_id = st.transaction_id ORDER BY tran_age_seconds DESC",
+      "Description": "Per head blocker: age of its open user transaction (0 = no open transaction)",
+      "Usage": "GaugesWithLabels",
+      "Columns": [
+        {
+          "Name": "spid",
+          "Label": "spid",
+          "Usage": "GaugeLabel",
+          "Order": 0
+        },
+        {
+          "Name": "host",
+          "Label": "host",
+          "Usage": "GaugeLabel",
+          "Order": 1
+        },
+        {
+          "Name": "login",
+          "Label": "login",
+          "Usage": "GaugeLabel",
+          "Order": 2
+        },
+        {
+          "Name": "program",
+          "Label": "program",
+          "Usage": "GaugeLabel",
+          "Order": 3
+        },
+        {
+          "Name": "status",
+          "Label": "status",
+          "Usage": "GaugeLabel",
+          "Order": 4
+        },
+        {
+          "Name": "dbname",
+          "Label": "dbname",
+          "Usage": "GaugeLabel",
+          "Order": 5
+        },
+        {
+          "Name": "tran_age_seconds",
+          "Label": "tran_age_seconds",
+          "Usage": "Gauge"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_open_tran",
+      "Query": "SELECT (SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE is_user_process = 1 AND open_transaction_count > 0) AS open_transactions, ISNULL((SELECT MAX(DATEDIFF(SECOND, at.transaction_begin_time, GETDATE()))   FROM sys.dm_tran_session_transactions st JOIN sys.dm_tran_active_transactions at ON at.transaction_id = st.transaction_id   JOIN sys.dm_exec_sessions s ON s.session_id = st.session_id WHERE st.is_user_transaction = 1 AND s.is_user_process = 1), 0) AS oldest_transaction_seconds, (SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE is_user_process = 1 AND open_transaction_count > 0 AND status = 'sleeping') AS idle_in_transaction_sessions, ISNULL((SELECT MAX(DATEDIFF(SECOND, last_request_end_time, GETDATE())) FROM sys.dm_exec_sessions   WHERE is_user_process = 1 AND open_transaction_count > 0 AND status = 'sleeping'), 0) AS idle_in_transaction_max_seconds",
+      "Description": "Open user transactions: count, oldest age, and sessions sleeping with an open transaction (the classic forgot-to-commit blocker before it blocks anyone)",
+      "Columns": [
+        {
+          "Name": "open_transactions",
+          "Label": "mssql_open_transactions",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "oldest_transaction_seconds",
+          "Label": "mssql_open_transaction_oldest_seconds",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "idle_in_transaction_sessions",
+          "Label": "mssql_idle_in_transaction_sessions",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "idle_in_transaction_max_seconds",
+          "Label": "mssql_idle_in_transaction_max_seconds",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        }
+      ]
+    },
+    {
+      "Name": "mssql_lock_waits_total",
+      "Query": "SELECT RTRIM(instance_name) AS resource, CAST(cntr_value AS float) AS value FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE '%:Locks' AND RTRIM(counter_name) = 'Lock Waits/sec'",
+      "Description": "Cumulative lock waits since SQL Server start, per lock resource type (rate() for waits/sec)",
+      "Usage": "CountersWithLabels",
+      "Columns": [
+        {
+          "Name": "resource",
+          "Label": "resource",
+          "Usage": "CounterLabel",
+          "Order": 0
+        },
+        {
+          "Name": "value",
+          "Label": "value",
+          "Usage": "Counter"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_lock_wait_time_ms_total",
+      "Query": "SELECT RTRIM(instance_name) AS resource, CAST(cntr_value AS float) AS value FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE '%:Locks' AND RTRIM(counter_name) = 'Lock Wait Time (ms)'",
+      "Description": "Cumulative lock wait time in ms since SQL Server start, per lock resource type (rate(...)/rate(mssql_lock_waits_total) = average wait)",
+      "Usage": "CountersWithLabels",
+      "Columns": [
+        {
+          "Name": "resource",
+          "Label": "resource",
+          "Usage": "CounterLabel",
+          "Order": 0
+        },
+        {
+          "Name": "value",
+          "Label": "value",
+          "Usage": "Counter"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_lock_timeouts_total",
+      "Query": "SELECT RTRIM(instance_name) AS resource, CAST(cntr_value AS float) AS value FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE '%:Locks' AND RTRIM(counter_name) = 'Lock Timeouts/sec'",
+      "Description": "Cumulative lock timeouts since SQL Server start, per lock resource type",
+      "Usage": "CountersWithLabels",
+      "Columns": [
+        {
+          "Name": "resource",
+          "Label": "resource",
+          "Usage": "CounterLabel",
+          "Order": 0
+        },
+        {
+          "Name": "value",
+          "Label": "value",
+          "Usage": "Counter"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_deadlocks_total",
+      "Query": "SELECT RTRIM(instance_name) AS resource, CAST(cntr_value AS float) AS value FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE '%:Locks' AND RTRIM(counter_name) = 'Number of Deadlocks/sec'",
+      "Description": "Cumulative deadlocks since SQL Server start, per lock resource type (increase() for deadlocks in a window)",
+      "Usage": "CountersWithLabels",
+      "Columns": [
+        {
+          "Name": "resource",
+          "Label": "resource",
+          "Usage": "CounterLabel",
+          "Order": 0
+        },
+        {
+          "Name": "value",
+          "Label": "value",
+          "Usage": "Counter"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_lock_wait_stats_ms_total",
+      "Query": "SELECT wait_type, CAST(wait_time_ms AS float) AS value FROM sys.dm_os_wait_stats WHERE wait_type LIKE 'LCK_M_%' AND waiting_tasks_count > 0",
+      "Description": "Cumulative wait time per lock wait type from sys.dm_os_wait_stats (which lock mode hurts: LCK_M_U update, LCK_M_X exclusive, LCK_M_S shared ...)",
+      "Usage": "CountersWithLabels",
+      "Columns": [
+        {
+          "Name": "wait_type",
+          "Label": "wait_type",
+          "Usage": "CounterLabel",
+          "Order": 0
+        },
+        {
+          "Name": "value",
+          "Label": "value",
+          "Usage": "Counter"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_lock_wait_stats_tasks_total",
+      "Query": "SELECT wait_type, CAST(waiting_tasks_count AS float) AS value FROM sys.dm_os_wait_stats WHERE wait_type LIKE 'LCK_M_%' AND waiting_tasks_count > 0",
+      "Description": "Cumulative number of waits per lock wait type from sys.dm_os_wait_stats",
+      "Usage": "CountersWithLabels",
+      "Columns": [
+        {
+          "Name": "wait_type",
+          "Label": "wait_type",
+          "Usage": "CounterLabel",
+          "Order": 0
+        },
+        {
+          "Name": "value",
+          "Label": "value",
+          "Usage": "Counter"
+        }
+      ]
+    },
+    {
+      "Name": "mssql_lock_misc",
+      "Query": "SELECT ISNULL((SELECT cntr_value FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE '%:General Statistics' AND RTRIM(counter_name) = 'Processes blocked'), 0) AS processes_blocked, ISNULL((SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'blocked process threshold (s)'), 0) AS blocked_process_threshold_seconds",
+      "Description": "Processes blocked (the same counter windows_exporter reports) and the blocked process threshold setting (0 = blocked process reports disabled)",
+      "Columns": [
+        {
+          "Name": "processes_blocked",
+          "Label": "mssql_processes_blocked",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "blocked_process_threshold_seconds",
+          "Label": "mssql_blocked_process_threshold_seconds",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        }
+      ]
     }
   ],
   "MillisecondTimeout": 4000

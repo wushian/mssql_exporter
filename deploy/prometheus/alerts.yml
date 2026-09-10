@@ -42,6 +42,47 @@ groups:
         annotations:
           summary: "{{ $value | humanize }} deadlocks in 15 minutes on {{ $labels.instance }}"
 
+      # ── Lock waits (metrics.json "SQL blocking" group) ──
+      # Someone has been stuck behind a lock for more than 30 s. No "for": the blocked user's
+      # screen is frozen right now. TS_ACC_MAN_WEB's /webhook/sql-blocking-alert digs out the blocker.
+      - alert: MssqlBlockingLongWait
+        expr: mssql_blocking_max_wait_seconds > 30
+        labels:
+          severity: critical
+          alert_type: sqlblocking
+        annotations:
+          summary: "Blocked for {{ $value | humanize }} s on {{ $labels.instance }}"
+          description: "mssql_blocking_max_wait_seconds is the longest wait among currently blocked user requests. See mssql_blocking_head_blocker_* (spid / host / login / program) for who is holding the lock."
+
+      # The head blocker is sleeping with an open transaction: a user parked on a screen, or code that forgot to commit.
+      - alert: MssqlBlockingIdleTransactionBlocker
+        expr: mssql_blocking_idle_tran_head_blockers > 0
+        for: 1m
+        labels:
+          severity: warning
+          alert_type: sqlblocking
+        annotations:
+          summary: "{{ $value }} idle-in-transaction blocker(s) on {{ $labels.instance }}"
+          description: "A session that blocks others is sleeping with open_transaction_count > 0. Find the person on that host or have the DBA KILL the spid; everyone queued behind it recovers at once."
+
+      # Early warning before anyone is blocked: a transaction has been left open and idle.
+      - alert: MssqlIdleInTransaction
+        expr: mssql_idle_in_transaction_max_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A transaction has been idle for {{ $value | humanize }} s on {{ $labels.instance }}"
+
+      # Average lock wait over 5 minutes above 1 s: contention is building even if nobody is stuck for long yet.
+      - alert: MssqlLockWaitAverageHigh
+        expr: rate(mssql_lock_wait_time_ms_total{resource="_Total"}[5m]) / rate(mssql_lock_waits_total{resource="_Total"}[5m]) > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Average lock wait {{ $value | humanize }} ms on {{ $labels.instance }}"
+
   - name: sql_exporter
     rules:
       - alert: SqlExporterDown

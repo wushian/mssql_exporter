@@ -5,7 +5,7 @@
 gauge / counter（可帶 label）後回傳。沒有背景排程、沒有快取：一次 scrape = 一輪查詢。
 
 本 repo 是 [DanielOliver/mssql_exporter](https://github.com/DanielOliver/mssql_exporter) 的 fork
-（MIT License，原作者 Daniel Oliver），程式碼與上游 2022-06 的 develop 分支相同。
+（MIT License，原作者 Daniel Oliver）。以上游 2022-06 的 develop 為基礎，之後的修正與升級見 git log。
 
 ---
 
@@ -13,25 +13,23 @@ gauge / counter（可帶 label）後回傳。沒有背景排程、沒有快取�
 
 | 項目 | 實測 |
 |---|---|
-| 建置 SDK | 專案 TFM 是 `net6.0`，`global.json` 設 `rollForward: latestMajor`，實測 .NET 9.0.309 SDK 可建置（會有 net6.0 已 EOL 的警告） |
-| 執行 Runtime | .NET 6 runtime（或用 `--self-contained` 發佈就不需要） |
+| 建置 SDK | 專案 TFM 是 `net8.0`，`global.json` 設 8.0.100 起 `rollForward: latestMajor`，實測 .NET 9.0.309 SDK 可建置，0 警告 |
+| 執行 Runtime | ASP.NET Core 8.0 Runtime（或用 `--self-contained` 發佈就不需要） |
 | 資料庫 | SQL Server，連線帳號要能讀 `sys.sysprocesses`、`sys.dm_os_performance_counters`（預設查詢用到） |
 | 網路 | 預設聽 `http://*:80`，Windows 上非管理員通常綁不到 80，改 `-ServerPort` |
 
-> `src/core/core.csproj` 除了 NuGet 的 `System.Data.SqlClient 4.8.3` 之外，還多了一條
-> `<Reference>` 指向 `..\..\..\..\..\..\Program Files\dotnet\sdk\NuGetFallbackFolder\...\4.5.1`。
-> 這台機器剛好有那個路徑所以建得起來；沒有的機器 MSBuild 會退回用 NuGet 版本。
-> 它是可以刪的殘留，見「已知限制」。
+> 資料庫驅動是 `Microsoft.Data.SqlClient`，和舊版 `System.Data.SqlClient` 有兩個行為差異，
+> 換版時連線字串要檢查，見「已知限制」的前兩條。
 
 ## 建置與執行
 
 ```powershell
-# 建置整個 solution（實測 0 錯誤、6 警告：net6.0 EOL ×2、SqlClient 弱點 ×2 各重複一次）
+# 建置整個 solution（實測 0 錯誤、0 警告）
 dotnet build src\mssql_exporter.sln -v minimal
 
 # 直接執行（從 src\server 目錄）
 cd src\server
-dotnet run -- serve -ServerPort 19345 -DataSource "Server=tcp:127.0.0.1,1433;Initial Catalog=master;Integrated Security=True;Encrypt=False;TrustServerCertificate=True;Connection Timeout=8;"
+dotnet run -- serve -ServerPort 19345 -DataSource "Server=tcp:localhost,1433;Initial Catalog=master;Integrated Security=True;Encrypt=False;TrustServerCertificate=True;Connection Timeout=8;"
 
 # 發佈成單一資料夾（CI 用的就是這兩條）
 dotnet publish src\server -c Release -o .\out\win   -r win-x64   --self-contained true
@@ -163,7 +161,7 @@ Scrape 是**同步阻塞**的：`UpdateMetrics` 用 `GetAwaiter().GetResult()` �
 ```
 mssql_exporter/
 ├── metrics.json                 預設的三個查詢（與 src/server/metrics.json 內容相同）
-├── Dockerfile                   sdk:6.0 建置 → aspnet:6.0 執行，ENTRYPOINT 帶 serve
+├── Dockerfile                   sdk:8.0 建置 self-contained 單檔 → runtime-deps:8.0 執行，ENTRYPOINT 帶 serve
 ├── docker-compose.yml           本地 build + 一個 SQL Server 2017 容器，設定全走環境變數
 ├── docker-compose-pull.yml      同上但改拉 danieloliver/mssql_exporter:latest
 ├── .env                         docker-compose 用的變數檔（見已知限制：實際上沒被用到）
@@ -174,9 +172,9 @@ mssql_exporter/
 │   ├── release.yaml             推 v* tag → windows runner 建置 portable 包 → 建立 Release；dispatch 只出 artifact
 │   ├── dotnetbuild.yaml         ubuntu + windows 各 publish 一份 self-contained，上傳 artifact
 │   ├── dockerimage.yaml         每次 push 都 docker build 一次當檢查
-│   └── dockerhub.yaml           develop / v* tag / release 時推 Docker Hub（需要 secrets）
+│   └── dockerhub.yaml           每次 push 都 build image；只有設了 DOCKERHUB_USERNAME/TOKEN secrets 才推 Docker Hub
 └── src/
-    ├── global.json              sdk 6.0.0 + rollForward latestMajor
+    ├── global.json              sdk 8.0.100 + rollForward latestMajor
     ├── mssql_exporter.sln
     ├── .run/                    Rider 的執行設定
     ├── core/                    類別庫 mssql_exporter.core
@@ -191,8 +189,9 @@ mssql_exporter/
     │   │   ├── ColumnUsage.cs / QueryUsage.cs / MeasureResult.cs      enum
     │   │   └── Parser.cs        Newtonsoft 反序列化
     │   ├── queries/
-    │   │   ├── GaugeGroupQuery.cs    GaugesWithLabels 實作，記住上輪 label 組合以便移除消失或失敗的序列
-    │   │   ├── CounterGroupQuery.cs  CountersWithLabels 實作，同上
+    │   │   ├── LabelledGroupQuery.cs 帶 label 查詢的共用邏輯：欄位對應、記住上輪 label 組合、移除消失或失敗的序列
+    │   │   ├── GaugeGroupQuery.cs    GaugesWithLabels：把值送進 Gauge
+    │   │   ├── CounterGroupQuery.cs  CountersWithLabels：把值送進 Counter
     │   │   ├── LabelSetComparer.cs   string[] 逐元素比較，讓 label 組合能當 HashSet 的 key
     │   │   └── GenericQuery.cs       單列多欄模式；GaugeColumn 有 DefaultValue，CounterColumn 沒有
     │   └── metrics/ConnectionUp.cs   mssql_up，就是一個 GenericQuery 跑 SELECT 1
@@ -209,16 +208,16 @@ mssql_exporter/
 | 套件 | 用途 |
 |---|---|
 | prometheus-net.AspNetCore 6.0.0 | `UseMetricServer`、`CollectorRegistry`、`MetricFactory`、gauge/counter |
-| System.Data.SqlClient 4.8.3 | `SqlConnection` / `SqlDataAdapter`（`QueryExtensions.cs`）。NuGet 對 4.8.3 標了兩個已知弱點 |
-| Newtonsoft.Json 13.0.1 | 只在 `Parser.cs` 反序列化 metrics.json |
+| Microsoft.Data.SqlClient 7.0.2 | `SqlConnection` / `SqlDataAdapter` / `SqlCommand.Cancel`（`QueryExtensions.cs`） |
+| Newtonsoft.Json 13.0.4 | 只在 `Parser.cs` 反序列化 metrics.json |
 | Serilog + AspNetCore + Settings.Configuration + Sinks.Console/File + Enrichers.Environment | 日誌；`Sinks.File` 與 `Enrichers.Environment` 有裝但 `config.json` 沒啟用 |
-| Microsoft.Extensions.Hosting.WindowsServices 6.0.0 | `IsWindowsService()` 判斷與 `UseWindowsService()` |
+| Microsoft.Extensions.Hosting.WindowsServices 8.0.1 | `IsWindowsService()` 判斷與 `UseWindowsService()` |
 
 ## 從 GitHub Release 佈署（Windows）
 
 推 `v*` tag 會由 `.github/workflows/release.yaml` 在 windows runner 建置並建立 Release，
 附件是 `mssql_exporter-<版本>-portable-win-x64.zip`。這是 **framework-dependent** 包，
-伺服器要先裝 **ASP.NET Core 6.0 Runtime**（不是只有 .NET Runtime）。
+伺服器要先裝 **ASP.NET Core 8.0 Runtime**（不是只有 .NET Runtime）。
 
 zip 內容：
 
@@ -274,11 +273,18 @@ sql_exporter_query_duration_seconds_count{query="mssql_wait_stats",sql_job="mssq
 ## Docker（未在本機實測）
 
 `docker-compose.yml` 會 build 本地 Dockerfile 並拉一個 `mssql/server:2017-latest`，兩邊的密碼
-都寫在 yml 裡（`yourStrong(!)Password`）。Dockerfile 用 `PublishSingleFile + PublishTrimmed + self-contained`
-再放進 `aspnet:6.0` 映像。本次只在 Windows 建置與執行，Docker 路徑僅讀碼確認 CI 有在跑 `docker build`。
+都寫在 yml 裡（`yourStrong(!)Password`）。Dockerfile 用 `PublishSingleFile + self-contained` 放進
+`runtime-deps:8.0` 映像；**沒有** `PublishTrimmed`，因為 .NET 7 起預設全量修剪，會把 Newtonsoft 與
+Serilog.Settings.Configuration 靠反射載入的型別剪掉。本次只在 Windows 建置與執行，Docker 路徑僅由 CI 的
+`docker build` 確認建得起來，沒有實際跑過容器。
 
 ## 已知限制
 
+- **整合驗證不能用純 IP 當 Server。** `Microsoft.Data.SqlClient` 對 `Server=tcp:127.0.0.1,1433;Integrated Security=True`
+  會用 IP 組 Kerberos SPN 而失敗（`無法產生 SSPI 內容`），舊驅動會退回 NTLM 所以以前能用。實測
+  `localhost` 或主機名稱都正常；一定要用 IP 的話加 `Server SPN=MSSQLSvc/<主機名>:1433`。SQL 登入不受影響。
+- **`Encrypt` 預設變成 true。** `Microsoft.Data.SqlClient` 4.0 起連線字串沒寫 `Encrypt` 就會要求加密並驗證憑證，
+  沒有正式憑證的 SQL Server 會連不上。連線字串請明寫 `Encrypt=False` 或 `TrustServerCertificate=True`。
 - **單列多欄模式遇到 0 列時**，gauge 回填 `DefaultValue`（沒設就維持上一次的值），counter 不動，不算例外。
   實測 `SELECT 1 WHERE 1=0` 配 `DefaultValue: 5` → 值 5、`mssql_exceptions 0`。
 - **帶 label 的查詢失敗或逾時時，該 metric 的所有序列會被移除**，直到下一次成功才重新出現。
@@ -295,11 +301,4 @@ sql_exporter_query_duration_seconds_count{query="mssql_wait_stats",sql_job="mssq
 - **Information 等級會把整份 metrics.json 和每個失敗查詢的完整 stack trace 印進日誌**，
   每次 scrape 都印。正式環境請設 `Warning`。
 - **預設連 port 80**，且 `UseUrls` 綁 `*`，沒有任何驗證，任何能連到這台機器的人都能觸發一輪 DB 查詢。
-- **`System.Data.SqlClient 4.8.3`** 有 NuGet 標記的中、高嚴重性弱點（GHSA-8g2p-5pqh-5jmc、GHSA-98g6-xh36-x2p7）。
-- **net6.0 已於 2024-11 停止支援**，建置時會警告。
-- `core.csproj` 那條指到 `NuGetFallbackFolder\...\4.5.1` 的 `<Reference>` 是機器相依的殘留。
-- `Dockerfile` 的 `COPY metrics.json ./` 複製到 `/app`，但最後只把 `/app/server/out` 放進 runtime 映像，
-  所以那一行沒效果；實際進映像的是 `src/server/metrics.json`（Web SDK 會把 `*.json` 當 Content 複製）。
-- `.github/workflows/dockerhub.yaml` 推的是 `danieloliver/mssql_exporter`，需要上游的 Docker Hub secrets，
-  在這個 fork 上不會成功。
 - 沒有任何自動化測試。

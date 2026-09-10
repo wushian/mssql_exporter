@@ -317,6 +317,7 @@ zip 內容：
 | `config.json.example`、`metrics.json.example` | **真檔不在 zip 裡**。升級時直接解壓覆蓋，現場改過的 `metrics.json` 不會被重設 |
 | `run-mssql_exporter.cmd` | 前景手動執行：首次把兩個 example 複製成真檔，然後 `serve` |
 | `nssm.exe` + `install-service.cmd` 等 | 掛成 Windows 服務，見下一小節 |
+| `add-firewall-rule.cmd` | 不經 nssm 安裝時用來開 inbound TCP port：`add-firewall-rule.cmd`（預設 9399）或帶 port 參數；規則名稱與 install-service.cmd 相同，重跑會換掉舊規則而不是疊加。sql_exporter 用 `add-firewall-rule.cmd 9237` |
 | `prometheus/` | `prometheus.yml` 完整範本（兩個 exporter 的 scrape job）與 `alerts.yml` 告警規則 |
 | `sql_exporter/` | 搭配用的 sql_exporter 設定與建置腳本，見上一節；exe 要另外建 |
 | `grafana/` | Grafana dashboard JSON 與匯入說明，見下一節 |

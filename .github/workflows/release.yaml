@@ -128,7 +128,7 @@ jobs:
           foreach ($f in 'mssql_exporter.exe', 'mssql_exporter.dll', 'nssm.exe',
                          'config.json.example', 'metrics.json.example', 'service-config.cmd.example',
                          'run-mssql_exporter.cmd', 'install-service.cmd', 'uninstall-service.cmd',
-                         'service-control.cmd', 'get-nssm.cmd',
+                         'service-control.cmd', 'get-nssm.cmd', 'add-firewall-rule.cmd',
                          'prometheus/prometheus.yml', 'prometheus/alerts.yml',
                          'sql_exporter/config.yml', 'grafana/mssql_exporter.json') {
             if (-not (Test-Path "publish/$f")) { throw "publish/$f missing" }

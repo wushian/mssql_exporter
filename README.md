@@ -155,9 +155,8 @@ Prometheus ──GET /metrics──▶ Kestrel ──▶ prometheus-net MetricSe
 ```
 
 Scrape 是**同步阻塞**的：`UpdateMetrics` 用 `GetAwaiter().GetResult()` 等所有查詢跑完（最多等到
-逾時）才回應。實測一個 `WAITFOR DELAY '00:00:05'` 的查詢配 2000 ms 逾時，scrape 剛好 2.1 秒回來，
-`mssql_timeouts 1`。逾時後 SQL 端的查詢**不會被取消**，會繼續跑到自然結束；結束後程式會發現
-token 已取消而丟掉結果，不會污染下一次 scrape（實測確認）。
+逾時）才回應。實測一個 `WAITFOR DELAY '00:00:05'` 的查詢配 2000 ms 逾時，scrape 剛好 2 秒回來，
+`mssql_timeouts 1`，日誌出現 SQL Server 回的 `Operation cancelled by user`，代表查詢在伺服器端也被停掉。
 
 ## 專案結構
 
@@ -179,7 +178,7 @@ mssql_exporter/
     ├── core/                    類別庫 mssql_exporter.core
     │   ├── IConfigure.cs        設定介面（DataSource / ConfigFile / ... / LogFilePath）
     │   ├── IQuery.cs            一個查詢的抽象：Name、Query、Timeout、Measure(DataSet)、Clear()
-    │   ├── QueryExtensions.cs   MeasureWithConnection：開連線、Fill、逾時賽跑、例外分類；GetColumnIndex
+    │   ├── QueryExtensions.cs   MeasureWithConnection：開連線、Fill、逾時取消（CommandTimeout + Cancel）、例外分類；GetColumnIndex
     │   ├── MetricQueryFactory.cs 依 Usage 把 MetricQuery 設定轉成三種 IQuery 之一
     │   ├── CounterExtensions.cs Counter.Set()：只在新值較大時 Inc 差額
     │   ├── config/
@@ -188,8 +187,9 @@ mssql_exporter/
     │   │   ├── ColumnUsage.cs / QueryUsage.cs / MeasureResult.cs      enum
     │   │   └── Parser.cs        Newtonsoft 反序列化
     │   ├── queries/
-    │   │   ├── GaugeGroupQuery.cs    GaugesWithLabels 實作
-    │   │   ├── CounterGroupQuery.cs  CountersWithLabels 實作
+    │   │   ├── GaugeGroupQuery.cs    GaugesWithLabels 實作，記住上輪 label 組合以便移除消失或失敗的序列
+    │   │   ├── CounterGroupQuery.cs  CountersWithLabels 實作，同上
+    │   │   ├── LabelSetComparer.cs   string[] 逐元素比較，讓 label 組合能當 HashSet 的 key
     │   │   └── GenericQuery.cs       單列多欄模式；GaugeColumn 有 DefaultValue，CounterColumn 沒有
     │   └── metrics/ConnectionUp.cs   mssql_up，就是一個 GenericQuery 跑 SELECT 1
     └── server/                  主控台程式 mssql_exporter
@@ -230,12 +230,12 @@ sc create mssql_exporter binPath= "C:\path\to\mssql_exporter.exe"
 
 - **單列多欄模式遇到 0 列時**，gauge 回填 `DefaultValue`（沒設就維持上一次的值），counter 不動，不算例外。
   實測 `SELECT 1 WHERE 1=0` 配 `DefaultValue: 5` → 值 5、`mssql_exceptions 0`。
-- **DB 斷線後帶 label 的舊值不會清掉。** `GaugeGroupQuery` / `CounterGroupQuery` 的 `Clear()` 是空的（TODO），
-  一旦某次 scrape 失敗，上一輪成功的 `{status="sleeping"} 25` 之類的樣本會**原封不動繼續輸出**，
-  只有 `mssql_up 0` 能提示你資料是舊的。（讀碼推斷，未實測斷線情境）
-- **逾時不取消 SQL 端查詢。** 逾時只是本地放棄等待，SQL Server 上的查詢繼續跑。scrape 間隔比查詢時間短的話會在
-  DB 端累積並行查詢。
-- **每次 scrape 阻塞到最慢的查詢或逾時為止。** Prometheus 的 `scrape_timeout` 要大於 `MillisecondTimeout`。
+- **帶 label 的查詢失敗或逾時時，該 metric 的所有序列會被移除**，直到下一次成功才重新出現。
+  同一查詢前一輪有、這一輪沒有的 label 組合也會被移除。Prometheus 端看到的是序列消失，不是舊值。
+- **逾時後的 SQL 端取消最多再等 2 秒。** 逾時會透過 `CommandTimeout` 與 `SqlCommand.Cancel` 送出取消，
+  實測 5 秒的查詢配 2000 ms 逾時，2 秒後就收到取消回應。若 SQL Server 2 秒內沒回應取消，
+  exporter 會放棄該工作並回報逾時，日誌會多一行 `did not stop within 2000 ms`。
+- **每次 scrape 阻塞到最慢的查詢或逾時為止。** Prometheus 的 `scrape_timeout` 要大於 `MillisecondTimeout` 加 2 秒。
 - **Counter 只增不減。** SQL Server 重啟後計數器歸零，exporter 的 counter 會停在舊值直到新值超過它。
 - **`ConfigurationOptions.LogLevel` / `LogFilePath` 沒作用**，`.env` 裡的 `PROMETHEUS_MSSQL_LogLevel=Error` 也是。
   要調日誌只能用 `PROMETHEUS_MSSQL_Serilog__MinimumLevel` 或改 `config.json`。

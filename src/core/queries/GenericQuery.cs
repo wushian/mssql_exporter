@@ -81,7 +81,7 @@ namespace mssql_exporter.core.queries
             public void Measure(DataSet dataSet)
             {
                 var table = dataSet.Tables[0];
-                if (table.Rows.Count >= 0)
+                if (table.Rows.Count > 0)
                 {
                     var row = table.Rows[0];
                     var valueIndex = QueryExtensions.GetColumnIndex(table, Name);
@@ -89,6 +89,10 @@ namespace mssql_exporter.core.queries
                     {
                         _gauge.Set(result);
                     }
+                }
+                else
+                {
+                    Clear();
                 }
             }
 
@@ -129,7 +133,7 @@ namespace mssql_exporter.core.queries
             public void Measure(DataSet dataSet)
             {
                 var table = dataSet.Tables[0];
-                if (table.Rows.Count >= 0)
+                if (table.Rows.Count > 0)
                 {
                     var row = table.Rows[0];
                     var valueIndex = QueryExtensions.GetColumnIndex(table, Name);

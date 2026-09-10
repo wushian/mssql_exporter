@@ -38,7 +38,7 @@ namespace mssql_exporter.server
             Console.WriteLine("      -DataSource (Connection String)");
             Console.WriteLine("      -ConfigFile (metrics.json)");
             Console.WriteLine("      -ServerPath (/metrics)");
-            Console.WriteLine("      -ServerPort (80)");
+            Console.WriteLine("      -ServerPort (9399)");
             Console.WriteLine("      -AddExporterMetrics (false)");
             Console.WriteLine("      -ConfigText ()");
             Console.WriteLine(string.Empty);

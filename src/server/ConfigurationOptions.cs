@@ -12,7 +12,7 @@ namespace mssql_exporter.server
 
         public string ServerPath { get; set; } = "metrics";
 
-        public int ServerPort { get; set; } = 80;
+        public int ServerPort { get; set; } = 9399;
 
         public bool AddExporterMetrics { get; set; } = false;
 

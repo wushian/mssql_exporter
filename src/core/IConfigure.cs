@@ -24,9 +24,9 @@
         string ServerPath { get; set; }
 
         /// <summary>
-        /// Default: "80"
+        /// Default: "9399"
         /// </summary>
-        /// <example>80</example>
+        /// <example>9399</example>
         int ServerPort { get; set; }
 
         /// <summary>

@@ -3,14 +3,14 @@ services:
   mssql_exporter:
     image: "danieloliver/mssql_exporter:latest"
     ports:
-      - "80:80"
+      - "9399:9399"
     depends_on: 
       - sqlserver.dev
     environment:
       - PROMETHEUS_MSSQL_DataSource=Server=tcp:sqlserver.dev,1433;Initial Catalog=master;Persist Security Info=False;User ID=sa;Password=yourStrong(!)Password;MultipleActiveResultSets=False;Encrypt=False;TrustServerCertificate=True;Connection Timeout=10;
       - PROMETHEUS_MSSQL_ConfigFile=metrics.json
       - PROMETHEUS_MSSQL_ServerPath=metrics
-      - PROMETHEUS_MSSQL_ServerPort=80
+      - PROMETHEUS_MSSQL_ServerPort=9399
       - PROMETHEUS_MSSQL_AddExporterMetrics=false
       - PROMETHEUS_MSSQL_Serilog__MinimumLevel=Information
       - |

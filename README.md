@@ -169,7 +169,8 @@ mssql_exporter/
 │   ├── mssql_exporter.json      可匯入的 Grafana dashboard，涵蓋兩個 exporter 的 metric（uid 固定，重匯即更新）
 │   └── README.md                匯入方式、模板變數、查詢上的判斷
 ├── deploy/
-│   ├── mssql_exporter/run-mssql_exporter.cmd   Release zip 內的啟動腳本，首次啟動複製 example 設定檔
+│   ├── mssql_exporter/          Release zip 根目錄的東西：run-mssql_exporter.cmd、nssm 服務腳本、service-config.cmd.example
+│   ├── prometheus/              prometheus.yml 完整範本與 alerts.yml 告警規則
 │   └── sql_exporter/            搭配用的 sql_exporter 設定、啟動與建置腳本（見下方章節）
 ├── .github/workflows/
 │   ├── release.yaml             推 v* tag → windows runner 建置 portable 包 → 建立 Release；dispatch 只出 artifact
@@ -228,23 +229,42 @@ zip 內容：
 |---|---|
 | `mssql_exporter.exe` 與 dll | 版本號從 tag 注入，`(Get-Item mssql_exporter.dll).VersionInfo.ProductVersion` 可查 |
 | `config.json.example`、`metrics.json.example` | **真檔不在 zip 裡**。升級時直接解壓覆蓋，現場改過的 `metrics.json` 不會被重設 |
-| `run-mssql_exporter.cmd` | 首次啟動時把兩個 example 複製成真檔，然後 `serve`。掛服務用 nssm 指到這個 cmd |
+| `run-mssql_exporter.cmd` | 前景手動執行：首次把兩個 example 複製成真檔，然後 `serve` |
+| `nssm.exe` + `install-service.cmd` 等 | 掛成 Windows 服務，見下一小節 |
+| `prometheus/` | `prometheus.yml` 完整範本（兩個 exporter 的 scrape job）與 `alerts.yml` 告警規則 |
 | `sql_exporter/` | 搭配用的 sql_exporter 設定與建置腳本，見上一節；exe 要另外建 |
 | `grafana/` | Grafana dashboard JSON 與匯入說明，見下一節 |
 
-連線字串用**系統環境變數** `PROMETHEUS_MSSQL_DataSource` 給，或在 exe 旁放
-`appsettings.json` 寫 `{"DataSource": "..."}`（服務沒有命令列參數可用）。
-日誌預設只有 Console sink，掛成服務後看不到；要改 `config.json` 啟用 `Serilog.Sinks.File`。
-
-不用 nssm 的話也可以直接：
-
-```cmd
-sc create mssql_exporter binPath= "C:\path\to\mssql_exporter.exe"
-```
-
-服務模式下程式自動走 `serve`，但這樣首次啟動不會自動產生 `metrics.json`，要先手動從 example 複製。
-
 手動觸發（Actions 頁面的 Run workflow）只會產出 workflow artifact，不建 Release，適合改過 workflow 後先試跑。
+
+### 掛成 Windows 服務（nssm）
+
+zip 已內含 `nssm.exe`（2.24 win64，CI 下載時校驗 SHA256）與四支腳本，整個資料夾可搬移，
+所有路徑由腳本所在位置推導。
+
+1. 解壓到目的資料夾，以**系統管理員**執行 `install-service.cmd`。第一次會從 `service-config.cmd.example`
+   建立 `service-config.cmd` 後停下來。
+2. 編輯 `service-config.cmd`：`DATASOURCE`（連線字串）、`LISTEN_PORT`（預設 9399）、需要的話
+   `SERVICE_ACCOUNT`、`DEPENDS_ON`。整合驗證時 Server 要用主機名稱，不要用 IP。
+3. 再執行一次 `install-service.cmd`。它會建立服務、設定 `serve` 參數與 `PROMETHEUS_MSSQL_*` 環境變數、
+   延遲自動啟動、stdout/stderr 輪替到 `logs\`、當掉自動重啟、開防火牆 inbound TCP port，
+   然後啟動並在 6 秒後確認真的 RUNNING。port 已被占用時會印出占用者並**不啟動**。
+4. 之後用 `service-control.cmd status | start | stop | restart | logs`。
+
+升級：停服務、解壓新 zip 覆蓋、`service-control.cmd restart`。`service-config.cmd`、`metrics.json`、
+`config.json` 都不在 zip 裡，不會被蓋掉。`uninstall-service.cmd` 只移除服務與防火牆規則，不動資料夾。
+
+幾個和一般 ASP.NET Core 服務不同的地方：
+
+- 服務一定要帶 `serve` 參數。nssm 啟動時父行程不是 services.exe，`IsWindowsService()` 會回 false，
+  沒參數程式只印說明就結束，變成重啟迴圈。腳本已設 `AppParameters serve`。
+- `ASPNETCORE_URLS` 無效，程式用 `UseUrls` 寫死綁 `http://*:port`，port 由 `PROMETHEUS_MSSQL_ServerPort` 決定。
+- 不需要 urlacl，Kestrel 不走 http.sys。
+- `DATASOURCE` 留空時要在 exe 旁放 `appsettings.json` 寫 `{"DataSource": "..."}`；密碼含 `"`、`%`、`!` 的也走這條。
+- 用 LocalSystem 跑整合驗證時，SQL Server 上登入的是機器帳號（本機是 `NT AUTHORITY\SYSTEM`，遠端是 `DOMAIN\主機$`）。
+
+腳本用假的 nssm.exe（記錄 argv）在沒有管理員權限下驗過參數組合，包含自訂帳號、相依服務、
+port 被占用三條分支；**實際安裝成服務並啟動**這一步需要提升權限，本次未執行。
 
 ## 搭配 sql_exporter 跑重查詢
 
@@ -257,7 +277,8 @@ sc create mssql_exporter binPath= "C:\path\to\mssql_exporter.exe"
 | `build-sql_exporter.ps1` | 上游沒發佈二進位檔，此腳本抓獨立 Go 工具鏈、clone v0.8、建出 `sql_exporter.exe`（實測 go1.27.1，產出約 60 MB，exe 不進版控） |
 | `config.yml` | 四個 MS SQL 查詢：各庫 data/log 大小、五個效能計數器、前 20 名 wait 類型、目前被封鎖的請求數。每分鐘跑一次 |
 | `run-sql_exporter.cmd` | 啟動，預設聽 9237。掛服務用 nssm 指到這個 cmd 即可 |
-| `prometheus-scrape.yml` | 兩個 exporter 的 scrape 片段 |
+
+Prometheus 端的 scrape 設定見 `deploy/prometheus/prometheus.yml`。
 
 連線字串不給帳號就走 Windows 整合驗證，實測本機 `sqlserver://127.0.0.1:1433?database=master&encrypt=disable` 直接可用。
 metric 一律叫 `sql_<name>`，並自動附 `driver`、`host`、`database`、`user`、`col`、`sql_job` 六個 label；

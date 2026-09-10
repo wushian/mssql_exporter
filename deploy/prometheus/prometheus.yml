@@ -1,0 +1,43 @@
+# Prometheus configuration template for mssql_exporter (+ optional sql_exporter).
+#
+# Minimal but complete: copy next to your prometheus.exe / into the Prometheus
+# container, replace the target host names, and merge the two jobs into an
+# existing prometheus.yml if you already have one.
+#
+# Ports match the shipped defaults:
+#   mssql_exporter  9399  (LISTEN_PORT in service-config.cmd)
+#   sql_exporter    9237  (run-sql_exporter.cmd)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  # mssql_exporter runs its queries ON EVERY SCRAPE and blocks until they finish
+  # or hit MillisecondTimeout (4000 ms in the shipped metrics.json, plus a 2 s
+  # cancellation grace). scrape_timeout must stay above that sum.
+  - job_name: mssql_exporter
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - sqlhost1.example.local:9399
+          # - sqlhost2.example.local:9399
+        labels:
+          env: prod
+
+  # sql_exporter runs its jobs in the background (interval in config.yml) and
+  # serves cached results, so scraping it is cheap; once a minute is plenty.
+  - job_name: sql_exporter
+    scrape_interval: 60s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - sqlhost1.example.local:9237
+        labels:
+          env: prod

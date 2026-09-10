@@ -1,0 +1,134 @@
+# Push a v* tag (e.g. v0.1.0) to build, package and create a GitHub Release.
+# workflow_dispatch only builds and uploads a workflow artifact; it never creates a Release.
+#
+# Package shape: portable framework-dependent (no -r RID, not self-contained), so the
+# server needs the ASP.NET Core 6.0 runtime installed. Built on windows-latest so the
+# zip contains the win-x64 mssql_exporter.exe apphost for nssm / sc create deployments.
+#
+# config.json and metrics.json are shipped as *.example only. Unzipping over an existing
+# deployment must not reset the site's query file; run-mssql_exporter.cmd copies the
+# examples into place on first start.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 0.1.0); empty uses 0.0.<run_number>'
+        required: false
+        default: ''
+
+env:
+  PROJECT: src/server/server.csproj
+  ARTIFACT: mssql_exporter
+  CONFIGURATION: Release
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      # On a tag push github.ref_name is the tag; on dispatch it is the branch name.
+      - name: Resolve version
+        id: ver
+        run: |
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $v = '${{ github.ref_name }}' -replace '^v', ''
+          } elseif ('${{ github.event.inputs.version }}') {
+            $v = '${{ github.event.inputs.version }}'
+          } else {
+            $v = '0.0.${{ github.run_number }}'
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "name=${{ env.ARTIFACT }}-$v-portable-win-x64" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $v"
+
+      - name: Restore
+        run: dotnet restore ${{ env.PROJECT }}
+
+      - name: Build
+        run: >
+          dotnet build ${{ env.PROJECT }}
+          -c ${{ env.CONFIGURATION }}
+          --no-restore
+          --nologo
+          -p:Version=${{ steps.ver.outputs.version }}
+
+      - name: Publish (portable, framework-dependent)
+        run: >
+          dotnet publish ${{ env.PROJECT }}
+          -c ${{ env.CONFIGURATION }}
+          --no-restore
+          --nologo
+          -p:Version=${{ steps.ver.outputs.version }}
+          -o publish
+
+      # Ship config files as examples only, add the start script, and bundle the
+      # sql_exporter companion config (its exe is built separately, see deploy/sql_exporter).
+      - name: Shape deployment folder
+        run: |
+          Rename-Item publish/config.json  config.json.example
+          Rename-Item publish/metrics.json metrics.json.example
+          Copy-Item deploy/mssql_exporter/* publish/
+          New-Item -ItemType Directory -Force publish/sql_exporter | Out-Null
+          Copy-Item deploy/sql_exporter/config.yml, deploy/sql_exporter/run-sql_exporter.cmd, `
+                    deploy/sql_exporter/build-sql_exporter.ps1, deploy/sql_exporter/prometheus-scrape.yml `
+                    publish/sql_exporter/
+          # Positive checks: what must be there.
+          foreach ($f in 'mssql_exporter.exe', 'mssql_exporter.dll', 'config.json.example', 'metrics.json.example', 'run-mssql_exporter.cmd') {
+            if (-not (Test-Path "publish/$f")) { throw "publish/$f missing" }
+          }
+          # Negative checks: real config files must not ship, or upgrades would overwrite site settings.
+          foreach ($f in 'config.json', 'metrics.json', 'appsettings.json') {
+            if (Test-Path "publish/$f") { throw "publish/$f must not be in the package" }
+          }
+          Get-ChildItem publish | Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
+
+      - name: Package
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Compress-Archive -Path publish/* `
+                           -DestinationPath "artifacts/${{ steps.ver.outputs.name }}.zip" -Force
+          Get-ChildItem artifacts | ForEach-Object {
+            Write-Host ("{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB))
+          }
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.name }}
+          path: artifacts/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # pwsh does not expand globs for native commands; list the files first.
+          $assets = (Get-ChildItem artifacts/*.zip).FullName
+          if (-not $assets) { throw "no zip in artifacts/" }
+          gh release create "${{ github.ref_name }}" $assets `
+            --title "${{ github.ref_name }}" `
+            --verify-tag `
+            --generate-notes

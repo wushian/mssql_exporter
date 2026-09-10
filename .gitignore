@@ -333,3 +333,6 @@ ASALocalRun/
 zip
 7Zip4Powershell
 out
+
+# Built from source by deploy/sql_exporter/build-sql_exporter.ps1 (60 MB, not tracked)
+deploy/sql_exporter/sql_exporter.exe

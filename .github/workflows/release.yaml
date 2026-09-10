@@ -93,8 +93,11 @@ jobs:
           Copy-Item deploy/sql_exporter/config.yml, deploy/sql_exporter/run-sql_exporter.cmd, `
                     deploy/sql_exporter/build-sql_exporter.ps1, deploy/sql_exporter/prometheus-scrape.yml `
                     publish/sql_exporter/
+          # Grafana dashboard for import; lives in its own folder, not next to the exe.
+          New-Item -ItemType Directory -Force publish/grafana | Out-Null
+          Copy-Item grafana/*.json, grafana/README.md publish/grafana/
           # Positive checks: what must be there.
-          foreach ($f in 'mssql_exporter.exe', 'mssql_exporter.dll', 'config.json.example', 'metrics.json.example', 'run-mssql_exporter.cmd') {
+          foreach ($f in 'mssql_exporter.exe', 'mssql_exporter.dll', 'config.json.example', 'metrics.json.example', 'run-mssql_exporter.cmd', 'grafana/mssql_exporter.json') {
             if (-not (Test-Path "publish/$f")) { throw "publish/$f missing" }
           }
           # Negative checks: real config files must not ship, or upgrades would overwrite site settings.

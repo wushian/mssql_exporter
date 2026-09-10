@@ -165,6 +165,9 @@ mssql_exporter/
 ├── docker-compose.yml           本地 build + 一個 SQL Server 2017 容器，設定全走環境變數
 ├── docker-compose-pull.yml      同上但改拉 danieloliver/mssql_exporter:latest
 ├── .env                         docker-compose 用的變數檔（見已知限制：實際上沒被用到）
+├── grafana/
+│   ├── mssql_exporter.json      可匯入的 Grafana dashboard，涵蓋兩個 exporter 的 metric（uid 固定，重匯即更新）
+│   └── README.md                匯入方式、模板變數、查詢上的判斷
 ├── deploy/
 │   ├── mssql_exporter/run-mssql_exporter.cmd   Release zip 內的啟動腳本，首次啟動複製 example 設定檔
 │   └── sql_exporter/            搭配用的 sql_exporter 設定、啟動與建置腳本（見下方章節）
@@ -227,6 +230,7 @@ zip 內容：
 | `config.json.example`、`metrics.json.example` | **真檔不在 zip 裡**。升級時直接解壓覆蓋，現場改過的 `metrics.json` 不會被重設 |
 | `run-mssql_exporter.cmd` | 首次啟動時把兩個 example 複製成真檔，然後 `serve`。掛服務用 nssm 指到這個 cmd |
 | `sql_exporter/` | 搭配用的 sql_exporter 設定與建置腳本，見上一節；exe 要另外建 |
+| `grafana/` | Grafana dashboard JSON 與匯入說明，見下一節 |
 
 連線字串用**系統環境變數** `PROMETHEUS_MSSQL_DataSource` 給，或在 exe 旁放
 `appsettings.json` 寫 `{"DataSource": "..."}`（服務沒有命令列參數可用）。
@@ -269,6 +273,15 @@ sql_exporter_query_duration_seconds_count{query="mssql_wait_stats",sql_job="mssq
 
 它自己的健康 metric 是 `sql_exporter_last_scrape_failed`（每個查詢一個）與 `sql_exporter_query_duration_seconds` histogram。
 注意它只有 gauge、沒有逐查詢逾時；`label` 欄位一律要是字串、`values` 欄位請 `CAST(... AS float)`。
+
+## Grafana dashboard
+
+`grafana/mssql_exporter.json` 一份 dashboard 涵蓋兩個 exporter：第一個 row 是 mssql_exporter 的即時 metric
+（可達性、例外／逾時、連線、deadlock），第二個 row 是 sql_exporter 四個背景查詢（封鎖、PLE、吞吐計數器、
+wait stats、各庫大小、查詢健康）。Grafana → Dashboards → Import 上傳即可，匯入時選 Prometheus data source。
+`uid` 固定，重新匯入會更新同一份。細節與查詢上的判斷見 `grafana/README.md`。
+
+JSON 語法、panel id、refId 與 metric 覆蓋率都驗過；**實際渲染未在 Grafana 上確認**。
 
 ## Docker（未在本機實測）
 

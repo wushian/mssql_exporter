@@ -19,9 +19,9 @@ jobs:
         dotnet-version: ["6.0"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Setup dotnet
-        uses: actions/setup-dotnet@v2
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ matrix.dotnet-version }}
       - name: Install dependencies
@@ -34,7 +34,7 @@ jobs:
           dotnet build --configuration Release --no-restore
           dotnet publish -c Release -o ../../mssql_exporter_linux_x64 -r linux-x64 --self-contained true
       - name: Upload dotnet exe
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: mssql_exporter_linux_x64
           path: mssql_exporter_linux_x64
@@ -45,9 +45,9 @@ jobs:
         dotnet-version: ["6.0"]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Setup dotnet
-        uses: actions/setup-dotnet@v2
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ matrix.dotnet-version }}
       - name: Install dependencies
@@ -60,7 +60,7 @@ jobs:
           dotnet build --configuration Release --no-restore
           dotnet publish -c Release -o ../../mssql_exporter_win_x64 -r win-x64 --self-contained true
       - name: Upload dotnet exe
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: mssql_exporter_win_x64
           path: mssql_exporter_win_x64

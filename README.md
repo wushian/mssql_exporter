@@ -132,6 +132,92 @@ Prometheus label 名，在第三種模式是 metric 名。值用 `double.TryPars
 | `mssql_exceptions` | 本次 scrape 拋例外的查詢數（含 `mssql_up`） |
 | `mssql_timeouts` | 本次 scrape 逾時的查詢數 |
 
+## SQL 鎖等待指標（這個 fork 的主要目的）
+
+被鎖擋住的 ERP 使用者畫面是**完全凍結**的，而 windows_exporter 的 mssql collector 只讀效能計數器，
+拿得到「目前被擋幾支」（Processes blocked）與累計等待時間，拿不到「最長已經等幾秒、誰擋的、擋在哪張表」——
+那些只在 `sys.dm_exec_requests` / `sys.dm_tran_locks` 這些 DMV 裡，必須跑 T-SQL。`metrics.json` 預設就帶下面這一組。
+連線帳號要有 **VIEW SERVER STATE**。
+
+### A. 即時封鎖鏈快照（每次 scrape 查一次，全部是 gauge）
+
+| metric | 說明 |
+|---|---|
+| `mssql_blocking_max_wait_seconds` | 目前被擋的使用者請求中，**最長已經等了幾秒**。告警主指標 |
+| `mssql_blocking_blocked_sessions` | 被擋的 session 數 |
+| `mssql_blocking_blockers` | 擋人的 session 數（含自己也被擋的中間節點） |
+| `mssql_blocking_head_blockers` | 鏈頭數：擋人、自己沒被擋 —— 元兇 |
+| `mssql_blocking_total_wait_seconds` | 所有被擋者的等待秒數總和（整體痛苦量） |
+| `mssql_blocking_chain_depth_max` | 最深的鏈（A 擋 B 擋 C = 2） |
+| `mssql_blocking_idle_tran_head_blockers` | 鏈頭裡「sleeping 且交易未提交」的數量 —— 使用者停在畫面上沒送出，最常見也最好修 |
+| `mssql_blocking_idle_tran_head_blocker_max_idle_seconds` | 那些鏈頭裡最久沒動的已閒置幾秒 |
+| `mssql_blocking_by_wait_type{wait_type}` | 被擋數依等待類型：`LCK_M_U` 更新鎖、`LCK_M_X` 獨佔、`LCK_M_S` 共用 … |
+| `mssql_blocking_by_database{dbname}` | 被擋數依資料庫 |
+| `mssql_blocking_wait_by_object{dbname,resource_type,object}` | 正在等的鎖在哪張表（`sys.dm_tran_locks` WAIT）。表名只解析得出 DataSource 的 Initial Catalog 那個 DB，其他 DB 的 `object` 為空 |
+| `mssql_blocking_head_blocker_victims{spid,host,login,program,status,dbname}` | 每個鏈頭直接擋住幾人（最多 10 個） |
+| `mssql_blocking_head_blocker_max_wait_seconds{…同上}` | 每個鏈頭底下最久的等待 |
+| `mssql_blocking_head_blocker_tran_age_seconds{…同上}` | 每個鏈頭的交易已開多久（0 = 沒開交易） |
+
+`spid` 當 label 會隨封鎖者換人而產生新的時間序列，但每條只活到封鎖結束，量不大；它的價值是
+告警訊息可以直接寫「SPID 138 @ SERVER-TS / userline / ERP.exe 擋了 3 人」。
+
+### B. 長交易（還沒擋人的潛在封鎖者）
+
+| metric | 說明 |
+|---|---|
+| `mssql_open_transactions` | 有交易未提交的使用者 session 數 |
+| `mssql_open_transaction_oldest_seconds` | 最老的未提交交易已開多久 |
+| `mssql_idle_in_transaction_sessions` | sleeping 且交易未提交的 session 數 |
+| `mssql_idle_in_transaction_max_seconds` | 其中最久沒動的已閒置幾秒 |
+
+這四個在封鎖發生**之前**就會先動，適合做預警（例如閒置交易超過 10 分鐘）。
+
+### C. 累計計數器（counter，用 `rate()` / `increase()`）
+
+| metric | 來源 |
+|---|---|
+| `mssql_lock_waits_total{resource}` | perf counter `Locks: Lock Waits/sec`，resource = Key / Page / Object / … / _Total |
+| `mssql_lock_wait_time_ms_total{resource}` | `Locks: Lock Wait Time (ms)`；`rate(時間)/rate(次數)` = 平均每次等多久 |
+| `mssql_lock_timeouts_total{resource}` | `Locks: Lock Timeouts/sec` |
+| `mssql_deadlocks_total{resource}` | `Locks: Number of Deadlocks/sec`（原本的 `mssql_deadlocks` gauge 保留相容） |
+| `mssql_lock_wait_stats_ms_total{wait_type}` / `mssql_lock_wait_stats_tasks_total{wait_type}` | `sys.dm_os_wait_stats` 的 `LCK_M_%`：哪種鎖模式在痛 |
+
+計數器是 SQL Server 啟動以來的累計值。exporter 的 counter 只會往上加：SQL Server 重啟後值歸零時
+exporter 端會**停在原值不動**，直到新值追過為止 —— 那段期間 `rate()` 是 0，不是負數。要精確就同時看 `mssql_up` 與服務啟動時間。
+
+### D. 設定與對照
+
+| metric | 說明 |
+|---|---|
+| `mssql_processes_blocked` | perf counter `General Statistics: Processes blocked`，與 windows_exporter 的 `windows_mssql_genstats_blocked_processes` 同一個值，方便兩邊對照 |
+| `mssql_blocked_process_threshold_seconds` | `sp_configure 'blocked process threshold'`；0 = 沒開 blocked process report（事後追查封鎖事件要靠它 + Extended Events） |
+
+### 選配：ERP AuditTable（事後視角）
+
+DMV 只有「現在」；封鎖在兩次 scrape 之間發生又解開就看不到。`deploy/mssql_exporter/metrics.erp-audit.json.example`
+從 ERP 的語句稽核表補「剛剛發生過」：近 5 分鐘完成、耗時 ≥ 5 秒、邏輯讀 < 50 的語句 —— 不是自己在跑，是在等別人放鎖。
+把裡面的 Queries 合併進 `metrics.json`，DataSource 的 Initial Catalog 要指到 ERP DB。
+
+### Grafana 規則範例
+
+```promql
+# 有人被擋超過 30 秒（TS_ACC_MAN_WEB 的 /webhook/sql-blocking-alert 收到後會再去 DMV 深挖封鎖者）
+mssql_blocking_max_wait_seconds > 30
+# 有人開著交易睡著超過 10 分鐘（預警，還沒擋到人）
+mssql_idle_in_transaction_max_seconds > 600
+# 最近 5 分鐘有 deadlock
+increase(mssql_deadlocks_total{resource="_Total"}[5m]) > 0
+# 平均每次鎖等待超過 1 秒
+rate(mssql_lock_wait_time_ms_total{resource="_Total"}[5m]) / rate(mssql_lock_waits_total{resource="_Total"}[5m]) > 1000
+```
+
+### 實測
+
+本機 SQL Server 2019：用 PowerShell 開一條連線 `BEGIN TRAN; UPDATE` 後閒置不提交（sleeping 且交易未提交），
+另一條 sqlcmd 更新同一列被擋。scrape 到的 `mssql_blocking_max_wait_seconds` 與 `sys.dm_exec_requests.wait_time`
+差在 0.1 秒內，`mssql_blocking_idle_tran_head_blockers` = 1，鏈頭三個帶 label 的指標都指到同一個 spid；
+封鎖解除後全部歸 0，`mssql_exceptions` / `mssql_timeouts` 維持 0。
+
 ## 運作流程
 
 ```
@@ -160,7 +246,7 @@ Scrape 是**同步阻塞**的：`UpdateMetrics` 用 `GetAwaiter().GetResult()` �
 
 ```
 mssql_exporter/
-├── metrics.json                 預設的三個查詢（與 src/server/metrics.json 內容相同）
+├── metrics.json                 預設查詢：原本的三個 + 「SQL 鎖等待指標」一組（與 src/server/metrics.json 內容相同）
 ├── Dockerfile                   sdk:8.0 建置 self-contained 單檔 → runtime-deps:8.0 執行，ENTRYPOINT 帶 serve
 ├── docker-compose.yml           本地 build + 一個 SQL Server 2017 容器，設定全走環境變數
 ├── docker-compose-pull.yml      同上但改拉 danieloliver/mssql_exporter:latest

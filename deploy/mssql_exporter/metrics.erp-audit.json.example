@@ -1,0 +1,45 @@
+{
+  "//": "選配:ERP 的 dbo.AuditTable(SQL 語句稽核)。把這些 Queries 合併進 metrics.json,DataSource 的 Initial Catalog 要指到 ERP DB。create_date 是 UTC、duration 單位微秒。",
+  "Queries": [
+    {
+      "Name": "mssql_audit_lock_bound",
+      "Query": "SELECT COUNT(*) AS statements_5m, ISNULL(MAX(duration) / 1000000.0, 0) AS max_seconds_5m FROM dbo.AuditTable WITH (NOLOCK) WHERE create_date >= DATEADD(MINUTE, -5, GETUTCDATE()) AND duration >= 5000000 AND ISNULL(logical_reads, 0) < 50",
+      "Description": "Statements finished in the last 5 minutes that took >= 5 s with almost no logical reads: they were waiting on locks, not working (the after-the-fact view of blocking)",
+      "MillisecondTimeout": 3000,
+      "Columns": [
+        {
+          "Name": "statements_5m",
+          "Label": "mssql_audit_lock_bound_statements_5m",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        },
+        {
+          "Name": "max_seconds_5m",
+          "Label": "mssql_audit_lock_bound_max_seconds_5m",
+          "Usage": "Gauge",
+          "DefaultValue": 0
+        }
+      ]
+    },
+    {
+      "Name": "mssql_audit_lock_bound_by_table",
+      "Query": "SELECT RTRIM(ISNULL(table_name, '')) AS table_name, COUNT(*) AS statements FROM dbo.AuditTable WITH (NOLOCK) WHERE create_date >= DATEADD(MINUTE, -5, GETUTCDATE()) AND duration >= 5000000 AND ISNULL(logical_reads, 0) < 50 GROUP BY RTRIM(ISNULL(table_name, ''))",
+      "Description": "Same as above, per table: which table's rows people were queuing for",
+      "Usage": "GaugesWithLabels",
+      "MillisecondTimeout": 3000,
+      "Columns": [
+        {
+          "Name": "table_name",
+          "Label": "table",
+          "Usage": "GaugeLabel",
+          "Order": 0
+        },
+        {
+          "Name": "statements",
+          "Label": "statements",
+          "Usage": "Gauge"
+        }
+      ]
+    }
+  ]
+}

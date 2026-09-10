@@ -1,0 +1,72 @@
+---
+# justwatchcom/sql_exporter 設定：背景排程執行的「重查詢」。
+# 每個 job 依 interval 在背景跑，/metrics 只回快取，不會被慢查詢卡住。
+# 所有 metric 命名為 sql_<name>，並自動附 driver / host / database / user / col / sql_job 六個 label。
+#
+# 連線字串：
+#   Windows 整合驗證（不給帳號就走 SSPI）：sqlserver://HOST:1433?database=master&encrypt=disable
+#   SQL 登入：                              sqlserver://USER:PASSWORD@HOST:1433?database=master&encrypt=disable
+#   密碼可用環境變數：                       sqlserver://USER:{{ .Env.MSSQL_PASSWORD }}@HOST:1433?database=master&encrypt=disable
+#   多台：connections 陣列放多條，metric 會靠 host label 區分。
+jobs:
+  - name: "mssql_heavy"
+    interval: '1m'
+    keepalive: false
+    connections:
+      - 'sqlserver://127.0.0.1:1433?database=master&encrypt=disable'
+    queries:
+      - name: "mssql_db_size_mb"
+        help: "Allocated file size per database in MB (sys.master_files)"
+        labels:
+          - "dbname"
+          - "filetype"
+        values:
+          - "size_mb"
+        query: |
+          SELECT DB_NAME(database_id) AS dbname,
+                 CASE type WHEN 0 THEN 'data' WHEN 1 THEN 'log' ELSE 'other' END AS filetype,
+                 CAST(SUM(size) * 8.0 / 1024 AS float) AS size_mb
+          FROM sys.master_files
+          GROUP BY database_id, type
+      - name: "mssql_perf_counter"
+        help: "Selected sys.dm_os_performance_counters values"
+        labels:
+          - "counter"
+          - "instance"
+        values:
+          - "value"
+        query: |
+          SELECT RTRIM(counter_name) AS counter,
+                 RTRIM(instance_name) AS instance,
+                 CAST(cntr_value AS float) AS value
+          FROM sys.dm_os_performance_counters
+          WHERE RTRIM(counter_name) IN ('Page life expectancy', 'Batch Requests/sec', 'User Connections', 'Lock Waits/sec', 'Transactions/sec')
+            AND (instance_name = '' OR instance_name = '_Total')
+      - name: "mssql_wait_stats"
+        help: "Top 20 cumulative wait types since restart (sys.dm_os_wait_stats)"
+        labels:
+          - "wait_type"
+        values:
+          - "wait_time_ms"
+          - "waiting_tasks"
+        query: |
+          SELECT TOP 20 wait_type,
+                 CAST(wait_time_ms AS float) AS wait_time_ms,
+                 CAST(waiting_tasks_count AS float) AS waiting_tasks
+          FROM sys.dm_os_wait_stats
+          WHERE waiting_tasks_count > 0
+            AND wait_type NOT LIKE 'SLEEP%' AND wait_type NOT LIKE 'BROKER%'
+            AND wait_type NOT IN ('CLR_AUTO_EVENT','CLR_MANUAL_EVENT','LAZYWRITER_SLEEP','XE_TIMER_EVENT','XE_DISPATCHER_WAIT',
+                                  'FT_IFTS_SCHEDULER_IDLE_WAIT','LOGMGR_QUEUE','CHECKPOINT_QUEUE','REQUEST_FOR_DEADLOCK_SEARCH',
+                                  'SQLTRACE_BUFFER_FLUSH','DIRTY_PAGE_POLL','HADR_FILESTREAM_IOMGR_IOCOMPLETION','SP_SERVER_DIAGNOSTICS_SLEEP',
+                                  'WAIT_XTP_HOST_WAIT','ONDEMAND_TASK_QUEUE','DISPATCHER_QUEUE_SEMAPHORE','QDS_ASYNC_QUEUE',
+                                  'QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP','QDS_PERSIST_TASK_MAIN_LOOP_SLEEP','XE_LIVE_TARGET_TVF')
+          ORDER BY wait_time_ms DESC
+      - name: "mssql_blocked_requests"
+        help: "Requests currently blocked by another session (sys.dm_exec_requests)"
+        values:
+          - "blocked"
+        query: |
+          SELECT CAST(COUNT(*) AS float) AS blocked
+          FROM sys.dm_exec_requests
+          WHERE blocking_session_id <> 0

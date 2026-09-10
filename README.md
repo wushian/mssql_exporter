@@ -220,6 +220,34 @@ sc create mssql_exporter binPath= "C:\path\to\mssql_exporter.exe"
 `config.json` / `appsettings.json` 給（服務沒有命令列參數可用）。日誌預設只有 Console sink，
 掛成服務後看不到；要改 `config.json` 啟用 `Serilog.Sinks.File`。
 
+## 搭配 sql_exporter 跑重查詢
+
+本專案每次 scrape 都即時查 DB，適合輕量、要新鮮的 DMV。幾分鐘跑一次就好的重查詢
+（資料庫大小、wait stats、效能計數器）交給 [justwatchcom/sql_exporter](https://github.com/justwatchcom/sql_exporter)
+在背景排程執行，兩個 exporter 並行，互不影響。`deploy/sql_exporter/` 放的是可直接用的一套：
+
+| 檔案 | 說明 |
+|---|---|
+| `build-sql_exporter.ps1` | 上游沒發佈二進位檔，此腳本抓獨立 Go 工具鏈、clone v0.8、建出 `sql_exporter.exe`（實測 go1.27.1，產出約 60 MB，exe 不進版控） |
+| `config.yml` | 四個 MS SQL 查詢：各庫 data/log 大小、五個效能計數器、前 20 名 wait 類型、目前被封鎖的請求數。每分鐘跑一次 |
+| `run-sql_exporter.cmd` | 啟動，預設聽 9237。掛服務用 nssm 指到這個 cmd 即可 |
+| `prometheus-scrape.yml` | 兩個 exporter 的 scrape 片段 |
+
+連線字串不給帳號就走 Windows 整合驗證，實測本機 `sqlserver://127.0.0.1:1433?database=master&encrypt=disable` 直接可用。
+metric 一律叫 `sql_<name>`，並自動附 `driver`、`host`、`database`、`user`、`col`、`sql_job` 六個 label；
+一個查詢多個 `values` 欄時靠 `col` 區分。實測輸出節錄：
+
+```txt
+sql_mssql_db_size_mb{col="size_mb",dbname="DBA",filetype="data",host="127.0.0.1:1433",sql_job="mssql_heavy"} 1739.0625
+sql_mssql_db_size_mb{col="size_mb",dbname="DBA",filetype="log",host="127.0.0.1:1433",sql_job="mssql_heavy"} 18.125
+sql_mssql_blocked_requests{col="blocked",sql_job="mssql_heavy"} 0
+sql_exporter_last_scrape_failed{query="mssql_wait_stats",sql_job="mssql_heavy",...} 0
+sql_exporter_query_duration_seconds_count{query="mssql_wait_stats",sql_job="mssql_heavy"} 1
+```
+
+它自己的健康 metric 是 `sql_exporter_last_scrape_failed`（每個查詢一個）與 `sql_exporter_query_duration_seconds` histogram。
+注意它只有 gauge、沒有逐查詢逾時；`label` 欄位一律要是字串、`values` 欄位請 `CAST(... AS float)`。
+
 ## Docker（未在本機實測）
 
 `docker-compose.yml` 會 build 本地 Dockerfile 並拉一個 `mssql/server:2017-latest`，兩邊的密碼

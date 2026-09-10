@@ -1,0 +1,89 @@
+@echo off
+rem ============================================================================
+rem  service-config.cmd - shared settings for the NSSM service scripts.
+rem
+rem  This file is NOT run directly. install-service.cmd / uninstall-service.cmd /
+rem  service-control.cmd all "call" it first.
+rem
+rem  The release zip ships this as service-config.cmd.example; the first run of
+rem  install-service.cmd copies it to service-config.cmd. Unzipping an upgrade
+rem  over the folder therefore never resets your settings.
+rem
+rem  Layout contract (do not change): nssm.exe, mssql_exporter.exe and these
+rem  .cmd files all live in the SAME folder. Every path below is derived from
+rem  the folder this script sits in, so the whole deployment is relocatable.
+rem  Keep this file ASCII-only: cmd reads it in the OEM code page.
+rem ============================================================================
+
+rem ---------------------------------------------------------------------------
+rem  EDIT THESE
+rem ---------------------------------------------------------------------------
+
+rem SQL Server connection string (Microsoft.Data.SqlClient syntax).
+rem Leave EMPTY to supply it another way instead: an appsettings.json next to
+rem the exe containing {"DataSource": "..."}. install-service.cmd refuses to
+rem install when both are missing, because the exporter would exit at once.
+rem
+rem   Windows auth (service runs as LocalSystem = the machine account; that
+rem   login must exist on the SQL Server, it does by default for a local
+rem   instance). Use a HOST NAME, not an IP: integrated auth against a bare IP
+rem   fails with "cannot generate SSPI context".
+rem     Server=tcp:localhost,1433;Initial Catalog=master;Integrated Security=True;Encrypt=False;TrustServerCertificate=True;Connection Timeout=8;
+rem   SQL login:
+rem     Server=tcp:dbhost,1433;Initial Catalog=master;User ID=prom_reader;Password=secret;Encrypt=False;TrustServerCertificate=True;Connection Timeout=8;
+rem
+rem   Do not use ", % or ! in the password here - cmd cannot pass them through
+rem   reliably. Put such a password in appsettings.json instead.
+set "DATASOURCE=Server=tcp:localhost,1433;Initial Catalog=master;Integrated Security=True;Encrypt=False;TrustServerCertificate=True;Connection Timeout=8;"
+
+rem TCP port for /metrics. The exporter binds ALL interfaces (http://*:port);
+rem 127.0.0.1-only binding is not available.
+set "LISTEN_PORT=9399"
+
+rem Serilog minimum level: Information logs every scrape, Warning only problems.
+set "LOG_LEVEL=Warning"
+
+rem Windows service key name (no spaces). Used by sc / nssm / net.
+set "SERVICE_NAME=mssql_exporter"
+
+rem Friendly name + description shown in services.msc. No parentheses.
+set "SERVICE_DISPLAY=MSSQL Exporter for Prometheus"
+set "SERVICE_DESC=Exposes SQL Server metrics on /metrics for Prometheus."
+
+rem Service account. Empty = LocalSystem (simplest; has write access to the app
+rem folder). For a remote SQL Server with Windows auth use a domain account:
+rem   set "SERVICE_ACCOUNT=DOMAIN\svc_prom"  +  SERVICE_PASSWORD
+rem A custom account needs Modify on this folder (install-service.cmd grants it)
+rem and "Log on as a service" (secpol.msc, manual).
+set "SERVICE_ACCOUNT="
+set "SERVICE_PASSWORD="
+
+rem Optional service dependency. Only when SQL Server runs on THIS machine:
+rem   default instance -> MSSQLSERVER    named -> MSSQL$INSTANCENAME
+set "DEPENDS_ON="
+
+rem 1 = install-service.cmd opens inbound TCP LISTEN_PORT so Prometheus on
+rem another host can scrape. 0 = leave the firewall alone.
+set "OPEN_FIREWALL=1"
+
+rem ---------------------------------------------------------------------------
+rem  DERIVED - normally no need to touch
+rem ---------------------------------------------------------------------------
+
+rem %~dp0 always ends with a backslash; strip it so joins stay readable.
+set "APP_DIR=%~dp0"
+if "%APP_DIR:~-1%"=="\" set "APP_DIR=%APP_DIR:~0,-1%"
+
+set "APP_EXE_NAME=mssql_exporter.exe"
+set "APP_EXE=%APP_DIR%\%APP_EXE_NAME%"
+set "NSSM_EXE=%APP_DIR%\nssm.exe"
+set "LOG_DIR=%APP_DIR%\logs"
+
+rem No parentheses in this name on purpose - cmd would break on them when the
+rem value is expanded inside an if(...) block.
+set "FW_RULE_NAME=%SERVICE_DISPLAY% - TCP %LISTEN_PORT%"
+
+rem Kestrel binds "*", which covers IPv4 and IPv6, so localhost is safe here.
+set "DISPLAY_URL=http://localhost:%LISTEN_PORT%/metrics"
+
+exit /b 0

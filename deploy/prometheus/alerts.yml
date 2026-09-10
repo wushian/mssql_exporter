@@ -1,0 +1,79 @@
+# Alerting rules for mssql_exporter / sql_exporter metrics.
+# Referenced from prometheus.yml (rule_files). Thresholds are starting points.
+
+groups:
+  - name: mssql_exporter
+    rules:
+      # The exporter itself is not reachable (service down, port blocked).
+      - alert: MssqlExporterDown
+        expr: up{job="mssql_exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "mssql_exporter {{ $labels.instance }} is not reachable"
+          description: "Prometheus could not scrape {{ $labels.instance }} for 2 minutes. Check the Windows service (service-control.cmd status) and logs\\service-stderr.log."
+
+      # Exporter is up but cannot log in to SQL Server.
+      - alert: MssqlUnreachable
+        expr: mssql_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SQL Server behind {{ $labels.instance }} is unreachable"
+          description: "mssql_up has been 0 for 2 minutes: the exporter is running but SELECT 1 fails. Connection string, login, or SQL Server itself."
+
+      # Some configured queries keep failing or timing out.
+      - alert: MssqlExporterQueriesFailing
+        expr: (mssql_exceptions + mssql_timeouts) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} exporter queries failing on {{ $labels.instance }}"
+          description: "mssql_exceptions + mssql_timeouts has been above 0 for 10 minutes. Those metrics are missing from the dashboard; check logs\\service-stdout.log for the query name."
+
+      # Deadlocks happening. The metric is cumulative since SQL Server restart.
+      - alert: MssqlDeadlocks
+        expr: increase(mssql_deadlocks[15m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanize }} deadlocks in 15 minutes on {{ $labels.instance }}"
+
+  - name: sql_exporter
+    rules:
+      - alert: SqlExporterDown
+        expr: up{job="sql_exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "sql_exporter {{ $labels.instance }} is not reachable"
+
+      - alert: SqlExporterQueryFailing
+        expr: sql_exporter_last_scrape_failed == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "sql_exporter query {{ $labels.query }} failing against {{ $labels.host }}"
+
+      # Requests blocked by another session, sampled once per job interval.
+      - alert: MssqlBlockedRequests
+        expr: sql_mssql_blocked_requests > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} blocked requests on {{ $labels.host }} for 5 minutes"
+
+      # Page life expectancy below 300 s usually means buffer pool pressure.
+      - alert: MssqlPageLifeExpectancyLow
+        expr: sql_mssql_perf_counter{counter="Page life expectancy"} < 300
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Page life expectancy on {{ $labels.host }} is {{ $value }} s"

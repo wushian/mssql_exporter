@@ -82,8 +82,33 @@ jobs:
           -p:Version=${{ steps.ver.outputs.version }}
           -o publish
 
-      # Ship config files as examples only, add the start script, and bundle the
-      # sql_exporter companion config (its exe is built separately, see deploy/sql_exporter).
+      # nssm.exe next to the exe makes the zip installable offline. nssm.cc has no
+      # signatures and no immutable URLs, so both hashes are pinned: a changed
+      # download fails the build instead of shipping an unknown binary.
+      - name: Bundle nssm.exe into the publish output
+        env:
+          NSSM_URL: https://nssm.cc/release/nssm-2.24.zip
+          NSSM_ZIP_SHA256: 727D1E42275C605E0F04ABA98095C38A8E1E46DEF453CDFFCE42869428AA6743
+          NSSM_EXE_SHA256: F689EE9AF94B00E9E3F0BB072B34CAAF207F32DCB4F5782FC9CA351DF9A06C97
+        run: |
+          $tmp = Join-Path $env:RUNNER_TEMP 'nssm'
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+          $zip = Join-Path $tmp 'nssm.zip'
+          Invoke-WebRequest -Uri $env:NSSM_URL -OutFile $zip -UseBasicParsing
+          $h = (Get-FileHash $zip -Algorithm SHA256).Hash
+          if ($h -ne $env:NSSM_ZIP_SHA256) { throw "nssm zip SHA256 mismatch: got $h" }
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          $exe = Get-ChildItem $tmp -Recurse -Filter nssm.exe |
+                 Where-Object { $_.DirectoryName -like '*win64*' } |
+                 Select-Object -First 1
+          if (-not $exe) { throw 'win64/nssm.exe not found inside the archive' }
+          $he = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          if ($he -ne $env:NSSM_EXE_SHA256) { throw "nssm.exe SHA256 mismatch: got $he" }
+          Copy-Item $exe.FullName publish/nssm.exe -Force
+
+      # Ship config files as examples only, add the service scripts, and bundle the
+      # sql_exporter companion config (its exe is built separately, see deploy/sql_exporter),
+      # the Prometheus config template and the Grafana dashboard.
       - name: Shape deployment folder
         run: |
           Rename-Item publish/config.json  config.json.example
@@ -91,17 +116,25 @@ jobs:
           Copy-Item deploy/mssql_exporter/* publish/
           New-Item -ItemType Directory -Force publish/sql_exporter | Out-Null
           Copy-Item deploy/sql_exporter/config.yml, deploy/sql_exporter/run-sql_exporter.cmd, `
-                    deploy/sql_exporter/build-sql_exporter.ps1, deploy/sql_exporter/prometheus-scrape.yml `
+                    deploy/sql_exporter/build-sql_exporter.ps1 `
                     publish/sql_exporter/
+          New-Item -ItemType Directory -Force publish/prometheus | Out-Null
+          Copy-Item deploy/prometheus/*.yml publish/prometheus/
           # Grafana dashboard for import; lives in its own folder, not next to the exe.
           New-Item -ItemType Directory -Force publish/grafana | Out-Null
           Copy-Item grafana/*.json, grafana/README.md publish/grafana/
-          # Positive checks: what must be there.
-          foreach ($f in 'mssql_exporter.exe', 'mssql_exporter.dll', 'config.json.example', 'metrics.json.example', 'run-mssql_exporter.cmd', 'grafana/mssql_exporter.json') {
+          # Positive checks: these come from different mechanisms (publish, download,
+          # copies) and any of them can silently stop delivering.
+          foreach ($f in 'mssql_exporter.exe', 'mssql_exporter.dll', 'nssm.exe',
+                         'config.json.example', 'metrics.json.example', 'service-config.cmd.example',
+                         'run-mssql_exporter.cmd', 'install-service.cmd', 'uninstall-service.cmd',
+                         'service-control.cmd', 'get-nssm.cmd',
+                         'prometheus/prometheus.yml', 'prometheus/alerts.yml',
+                         'sql_exporter/config.yml', 'grafana/mssql_exporter.json') {
             if (-not (Test-Path "publish/$f")) { throw "publish/$f missing" }
           }
           # Negative checks: real config files must not ship, or upgrades would overwrite site settings.
-          foreach ($f in 'config.json', 'metrics.json', 'appsettings.json') {
+          foreach ($f in 'config.json', 'metrics.json', 'appsettings.json', 'service-config.cmd') {
             if (Test-Path "publish/$f") { throw "publish/$f must not be in the package" }
           }
           Get-ChildItem publish | Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
